@@ -1,5 +1,6 @@
 #include "capture.h"
 #include "frame.h"
+#include "leds.h"
 #include "common.h"
 
 #define DEBUG 1
@@ -11,7 +12,8 @@
 static int quit = 0;
 
 int filterSDLQuitEvent(void *userdata, SDL_Event *event);
-int initSDL(SDL_Window **window, SDL_Renderer **render, SDL_Texture **texture, int width, int height, int sdl_format);
+int initSDL(SDL_Window **window, SDL_Renderer **render, SDL_Texture **texture,
+            int posX, int posY, int width, int height, int sdl_format, const char *title);
 int initParams(int v4l2_format, int width, int height, int *sdl_format, int *pitch, int *bytes);
 
 int main(int argc, char **argv)
@@ -22,12 +24,19 @@ int main(int argc, char **argv)
   int width = 640;
   int height = 480;
 
+  int leds_x = 30;
+  int leds_y = 14;
+
   int v4l2_format = V4L2_PIX_FMT_RGB24; // V4L2_PIX_FMT_YUV420 || V4L2_PIX_FMT_YUYV || V4L2_PIX_FMT_RGB24 || -1
 
-  SDL_Window *window = 0;
-  SDL_Renderer *render = 0;
-  SDL_Texture *texture = 0;
+  SDL_Window *windowIn = 0;
+  SDL_Window *windowOut = 0;
+  SDL_Renderer *renderIn = 0;
+  SDL_Renderer *renderOut = 0;
+  SDL_Texture *textureIn = 0;
+  SDL_Texture *textureOut = 0;
   Frame *frame = 0;
+  Leds *leds = 0;
   int bytes, sdl_format, pitch;
 
   if (!initCaptureDevice("/dev/video0", &width, &height, &v4l2_format)) {
@@ -40,13 +49,21 @@ int main(int argc, char **argv)
     exit(-1);
   }
 
-  if (!initSDL(&window, &render, &texture, width, height, sdl_format)) {
+  if (!initSDL(&windowIn, &renderIn, &textureIn, 0, 0, width, height, sdl_format, "Input stream")) {
     closeCaptureDevice();
     exit(-1);
-  }  
+  }
+
+  if (!initSDL(&windowOut, &renderOut, &textureOut, width + 2, 0, width, height, sdl_format, "Leds")) {
+    closeCaptureDevice();
+    exit(-1);
+  }
+
+  leds = initLeds(leds_x, leds_y, width, height);
 
   frame = new_Frame(v4l2_format, bytes, width, height);
-  SDL_UpdateTexture(texture, NULL, frame->data, pitch);
+  SDL_UpdateTexture(textureIn, NULL, frame->data, pitch);
+  SDL_UpdateTexture(textureOut, NULL, frame->data, pitch);
 
   SDL_SetEventFilter(filterSDLQuitEvent, NULL);
   while (!quit)
@@ -56,27 +73,35 @@ int main(int argc, char **argv)
 
     // Capture and process input
     if (captureFromDevice(frame)) {
-      SDL_UpdateTexture(texture, NULL, frame->data, pitch);
-      processFrame();
+      SDL_UpdateTexture(textureIn, NULL, frame->data, pitch);
+      unsigned char *output = processFrame(frame, leds);
+      SDL_UpdateTexture(textureOut, NULL, output, pitch);
+      free(output);
     }
 
     // Update render
-    SDL_RenderClear(render);
-    SDL_RenderCopy(render, texture, NULL, NULL);
-    SDL_RenderPresent(render);
+    SDL_RenderClear(renderIn);
+    SDL_RenderCopy(renderIn, textureIn, NULL, NULL);
+    SDL_RenderPresent(renderIn);
+    SDL_RenderClear(renderOut);
+    SDL_RenderCopy(renderOut, textureOut, NULL, NULL);
+    SDL_RenderPresent(renderOut);
   }
 
   closeCaptureDevice();
   free_Frame(frame);
-  SDL_DestroyRenderer(render);
-  SDL_DestroyTexture(texture);
+  freeLeds(leds);
+  SDL_DestroyRenderer(renderIn);
+  SDL_DestroyTexture(textureIn);
+  SDL_DestroyRenderer(renderOut);
+  SDL_DestroyTexture(textureOut);
   SDL_Quit();
 
   return 0;
 }
 
 int filterSDLQuitEvent(void *userdata, SDL_Event *event) {
-  if (event->type == SDL_QUIT) {
+  if (event->type == SDL_QUIT || event->window.event == SDL_WINDOWEVENT_CLOSE) {
     quit = 1;
     return 0;
   }
@@ -109,13 +134,14 @@ int initParams(int v4l2_format, int width, int height, int *sdl_format, int *pit
   }
 }
 
-int initSDL(SDL_Window **window, SDL_Renderer **render, SDL_Texture **texture, int width, int height, int sdl_format) {
+int initSDL(SDL_Window **window, SDL_Renderer **render, SDL_Texture **texture,
+            int posX, int posY, int width, int height, int sdl_format, const char *title) {
   if (SDL_Init(SDL_INIT_VIDEO) < 0) {
     error("Could not initialize SDL: %s\n", SDL_GetError());
     return 0;
   }
 
-  *window = SDL_CreateWindow("Input stream", 0, 0, width, height, SDL_WINDOW_SHOWN);
+  *window = SDL_CreateWindow(title, posX, posY, width, height, SDL_WINDOW_SHOWN);
   if (!*window) {
     error("Could not create window: %s\n", SDL_GetError());
     return 0;
