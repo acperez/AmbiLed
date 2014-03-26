@@ -3,6 +3,9 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+
+#include "leds.h"
 
 typedef struct {
   unsigned char *data;
@@ -15,8 +18,6 @@ typedef struct {
 Frame* new_Frame(int format, int bytes, int width, int height); 
 void free_Frame(Frame *frame);
 
-unsigned char* getData(Frame *frame);
-void setData(Frame *frame, void *start, int bytes);
-int processFrame();
+unsigned char* processFrame(Frame *frame, Leds *leds);
 
 #endif

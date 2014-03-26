@@ -10,7 +10,7 @@ BINDIR = bin
 vpath %.c src
 vpath %.h src
 
-SRC = ambiled.c capture.c frame.c
+SRC = ambiled.c capture.c frame.c leds.c
 OBJ = $(patsubst %.c,$(OBJDIR)/%.o,$(SRC))
 
 $(OBJDIR)/%.o: %.c
