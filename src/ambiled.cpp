@@ -3,15 +3,34 @@
 #include <time.h>
 #endif
 
+#include <libconfig.h>
+#include <signal.h>
+
 #include "usb_grabber.h"
 #include "engine.h"
 #include "leds.h"
 #include "arduino.h"
 #include "video.h"
 #include "common.h"
-#include <signal.h>
 
 static int quit = 0;
+
+typedef struct {
+  const char *filename;
+  size_t width;
+  size_t height;
+  int ledsRight;
+  int ledsUp;
+  int ledsLeft;
+  int ledsDown;
+  const char *videoPath;
+  const char *ledControllerPath;
+  VideoType videoType;
+  LedType ledType;
+  LedControllerType ledControllerType;
+} Config;
+
+void readConf(const char *aFilename, Config *config);
 
 //int filterSDLQuitEvent(void *userdata, SDL_Event *event);
 //int initSDL(SDL_Window **window, SDL_Renderer **render, SDL_Texture **texture,
@@ -27,29 +46,20 @@ void intHandler(int sign) {
 
 int main(int argc, char **argv)
 {
-  // Input params
-  size_t width = 320;
-  size_t height = 240;
-//  size_t width = 640;
-//  size_t height = 480;
+  uint32_t v4l2_format = V4L2_PIX_FMT_RGB24;
+  int bytes, pitch;
+  Capturer *capturer;
+  Engine *engine;
+  uint8_t *frameBuffer;
 
-  int leds_up = 24;
-  int leds_right = 13;
-  int leds_down = 0;
-  int leds_left = 13;
+  const char *config_filename = "ambiled.conf";
 
-  const char *arduinoDev = "/dev/ttyACM0";
-//  const char* piDev = "/dev/spidev0.0";
-
-  LedControllerType controllerType = ARDUINO;
-//  LedControllerType controllerType = RASPBERRY;
-  LedType ledType = WS2801;
+  Config config;
+  readConf(config_filename, &config);
 
 #ifdef DEBUG
   struct timeval stop, start;
 #endif
-
-  uint32_t v4l2_format = V4L2_PIX_FMT_RGB24;
 
 ////  if(!setOverCommitMemory("1")) {
 ////    exit(-1);
@@ -61,22 +71,27 @@ int main(int argc, char **argv)
 //  SDL_Renderer *renderOut = 0;
 //  SDL_Texture *textureIn = 0;
 //  SDL_Texture *textureOut = 0;
-  int bytes, pitch;
 //  int sdl_format;
 
-  Capturer *capturer = new USBGrabber();
-  if(!capturer->open("/dev/video1", &width, &height, &v4l2_format)) {
+  switch (config.videoType) {
+    case CAPTURER:
+      capturer = new USBGrabber();
+      break;
+    case PLAYER:
+      capturer = new Video();
+      break;
+    case UNKNOWN:
+      error("Unknown video type\n");
+      exit(-1);
+  }
+
+  if(!capturer->open(config.videoPath, &config.width, &config.height, &v4l2_format)) {
 ////    setOverCommitMemory("0");
     exit(-1);
   }
 
-//  Capturer *capturer = new Video();
-//  if (!capturer->open("/home/acperez/ssd/ambilight/the-lion-king-bluray-trailer-720p-HDTN.mp4", &width, &height, &v4l2_format)) {
-//    exit(-1);
-//  }
-
 //  if (!initParams(v4l2_format, width, height, &sdl_format, &pitch, &bytes)) {
-  if (!initParams(v4l2_format, width, height, &pitch, &bytes)) {
+  if (!initParams(v4l2_format, config.width, config.height, &pitch, &bytes)) {
     delete capturer;
     error("Unknwn video color format\n");
 ////    setOverCommitMemory("0");
@@ -93,15 +108,15 @@ int main(int argc, char **argv)
 //    exit(-1);
 //  }
 
-  Engine *engine = new Engine(ledType, leds_up, leds_right, leds_down, leds_left, width, height);
-  if (!engine->initLedController(arduinoDev, controllerType)) {
+  engine = new Engine(config.ledType, config.ledsUp, config.ledsRight, config.ledsDown, config.ledsLeft, config.width, config.height);
+  if (!engine->initLedController(config.ledControllerPath, config.ledControllerType)) {
 //  if (!engine->initLedController(piDev, controllerType)) {
     delete capturer;
 ////    setOverCommitMemory("0");
     exit(-1);
   }
 
-  uint8_t *buffer = (uint8_t *) malloc(bytes);
+  frameBuffer = (uint8_t *) malloc(bytes);
 
 //  SDL_UpdateTexture(textureIn, NULL, buffer, pitch);
 //  SDL_UpdateTexture(textureOut, NULL, buffer, pitch);
@@ -120,9 +135,9 @@ int main(int argc, char **argv)
 //    while (SDL_PollEvent(NULL));
 
     // Capture and process input
-    if (capturer->getFrame(buffer, bytes)) {
+    if (capturer->getFrame(frameBuffer, bytes)) {
 //      SDL_UpdateTexture(textureIn, NULL, buffer, pitch);
-      engine->processFrame(buffer, bytes);
+      engine->processFrame(frameBuffer, bytes);
 //      SDL_UpdateTexture(textureOut, NULL, output, pitch);
     }
 
@@ -150,6 +165,7 @@ int main(int argc, char **argv)
 
   delete capturer;
   delete engine;
+  free(frameBuffer);
 //  SDL_DestroyRenderer(renderIn);
 //  SDL_DestroyTexture(textureIn);
 //  SDL_DestroyRenderer(renderOut);
@@ -260,3 +276,124 @@ int setOverCommitMemory(const char* value) {
 //
 //  return 1;
 //}
+
+void confError(const char *filename, const char *param) {
+  error("Missing param \'%s\' in config file %s\n", param, filename);
+  exit(-1);
+}
+
+void confInvalid(const char *filename, const char *param, const char *value) {
+  error("Invalid value \'%s\' for param \'%s\' in config file %s\n", value, param, filename);
+  exit(-1);
+}
+
+void readConf(const char *aFilename, Config * config) {
+  config_t cfg;
+  config_init(&cfg);
+
+  // Open config file
+  if (!config_read_file(&cfg, aFilename)) {
+    error("Can't open config file %s: %d - %s\n", aFilename, config_error_line(&cfg), config_error_text(&cfg));
+    config_destroy(&cfg);
+    exit(-1);
+  }
+
+  config->filename = aFilename;
+
+  config->videoType = UNKNOWN;
+  config->ledType = EMPTY;
+  config->ledControllerType = NONE;
+
+  // Load config groups
+  config_setting_t * video = config_lookup(&cfg, "video");
+  if (!video) {
+    error("Missing video configuration in config file %s\n", aFilename);
+    exit(-1);
+  }
+
+  config_setting_t * videoDevice = config_lookup(&cfg, "video/device");
+  if (!videoDevice) {
+    error("Missing video device configuration in config file %s\n", aFilename);
+    exit(-1);
+  }
+
+  config_setting_t * leds = config_lookup(&cfg, "leds");
+  if (!leds) {
+    error("Missing leds configuration in config file %s\n", aFilename);
+    exit(-1);
+  }
+
+  config_setting_t * ledController = config_lookup(&cfg, "leds/controller");
+  if (!ledController) {
+    error("Missing led controller configuration in config file %s\n", aFilename);
+    exit(-1);
+  }
+
+  // Load params
+
+  // Video width
+  int width;
+  if (!config_setting_lookup_int(video, "width", &width))
+    confError(aFilename, "video/width");
+
+  config->width = width;
+
+  // Video height
+  int height;
+  if (!config_setting_lookup_int(video, "height", &height))
+    confError(aFilename, "video/height");
+
+  config->height = height;
+
+  // Video device type
+  const char *videoDeviceType;
+  if (!config_setting_lookup_string(videoDevice, "type", &videoDeviceType))
+    confError(aFilename, "video/device/type");
+
+  if (strcmp(videoDeviceType, "CAPTURER") == 0) config->videoType = CAPTURER;
+  if (strcmp(videoDeviceType, "PLAYER") == 0) config->videoType = PLAYER; 
+  if (config->videoType == UNKNOWN) confInvalid(aFilename, "video/device/type", videoDeviceType);
+
+  // Video device path
+  if (!config_setting_lookup_string(videoDevice, "path", &config->videoPath))
+    confError(aFilename, "video/device/path");
+
+  // Led type
+  const char *ledDeviceType;
+  if (!config_setting_lookup_string(leds, "type", &ledDeviceType))
+    confError(aFilename, "leds/type");
+
+  if (strcmp(ledDeviceType, "WS2801") == 0) config->ledType = WS2801;
+  if (strcmp(ledDeviceType, "WS2812B") == 0) config->ledType = WS2812B;
+  if (strcmp(ledDeviceType, "TM1804") == 0) config->ledType = TM1804;
+  if (config->ledType == EMPTY) confInvalid(aFilename, "leds/type", ledDeviceType);
+
+  // Leds left
+  if (!config_setting_lookup_int(leds, "left", &config->ledsLeft))
+    confError(aFilename, "leds/left");
+
+  // Leds up
+  if (!config_setting_lookup_int(leds, "up", &config->ledsUp))
+    confError(aFilename, "leds/up");
+
+  // Leds right
+  if (!config_setting_lookup_int(leds, "right", &config->ledsRight))
+    confError(aFilename, "leds/right");
+
+  // Leds down
+  if (!config_setting_lookup_int(leds, "down", &config->ledsDown))
+    confError(aFilename, "leds/down");
+
+  // Led controller type
+  const char *ledControllerDeviceType;
+  if (!config_setting_lookup_string(ledController, "type", &ledControllerDeviceType))
+    confError(aFilename, "leds/controller/type");
+
+  if (strcmp(ledControllerDeviceType, "ARDUINO") == 0) config->ledControllerType = ARDUINO;
+  if (strcmp(ledControllerDeviceType, "RASPBERRY") == 0) config->ledControllerType = RASPBERRY;
+  if (config->ledControllerType == NONE) confInvalid(aFilename, "leds/controller/type", ledControllerDeviceType);
+
+  // Led controller device pat
+  if (!config_setting_lookup_string(ledController, "path", &config->ledControllerPath))
+    confError(aFilename, "leds/controller/path");
+}

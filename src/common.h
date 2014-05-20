@@ -9,8 +9,9 @@
 #define print(FMT, ARGS...) fprintf(stdout, FMT, ## ARGS)
 #define error(FMT, ARGS...) fprintf(stderr, FMT, ## ARGS)
 
-enum LedControllerType { ARDUINO, RASPBERRY };
-enum LedType { WS2801, WS2812B, TM1804 };
+enum VideoType { CAPTURER, PLAYER, UNKNOWN };
+enum LedControllerType { ARDUINO, RASPBERRY, NONE };
+enum LedType { WS2801, WS2812B, TM1804, EMPTY };
 
 typedef struct {
   int x;
