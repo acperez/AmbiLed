@@ -1,56 +1,40 @@
-#include "capture.h"
-#include "common.h"
+#include "usb_grabber.h"
 
-struct buffer
-{
-  void   *start;
-  size_t length;
-};
-
-typedef struct {
-  int fd;
-  struct v4l2_format fmt;
-  struct buffer *buf;
-  int buffers;
-  enum v4l2_buf_type type;
-} capturer;
-
-
-const capturer initCapturer() {
-  capturer device;
-
-  device.fd       = 0;
-  device.buf      = 0;
-  device.buffers  = 0;
-  device.type     = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  clear(device.fmt);
-  device.fmt.type = device.type;
-
-  return device;
+USBGrabber::USBGrabber() {
+  mFd       = 0;
+  mBuf      = 0;
+  mBuffers  = 0;
+  mType     = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  clear(mFmt);
+  mFmt.type = mType;
 }
 
-static capturer device;
+USBGrabber::~USBGrabber() {
+  enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-int validateCaptureDevice();
-int initCaptureFormat();
-int setCaptureFormat(int *width, int *height, int *format);
-int getCaptureInfo();
-int initBuffers();
-int startStreaming();
+  if (v4l2_ioctl(mFd, VIDIOC_STREAMOFF, &type) < 0 ) {
+    error("Can't stop streaming I/O\n");
+  }
 
+  for (size_t i = 0; i < mBuffers; i++)
+  {
+    v4l2_munmap(mBuf[i].start, mBuf[i].length);
+  }
 
-int initCaptureDevice(const char* devPath, int *width, int *height, int *format) {
-  if (device.fd != 0) {
-    error("Capture device already initialized\n");
+  free(mBuf);
+  v4l2_close(mFd);
+  mFd = 0;
+}
+
+int USBGrabber::open(const char* aDevPath, size_t *aWidth, size_t *aHeight, uint32_t *aFormat) {
+  if (mFd != 0) {
+    error("Device already opened");
     return 0;
   }
 
-  // init device struc
-  device = initCapturer();
-
   // Open capture device
-  device.fd = v4l2_open(devPath, O_RDWR | O_NONBLOCK, 0);
-  if (device.fd < 0)
+  mFd = v4l2_open(aDevPath, O_RDWR | O_NONBLOCK, 0);
+  if (mFd < 0)
   {
     error("Cannot open capturer device\n");
     return 0;
@@ -58,7 +42,7 @@ int initCaptureDevice(const char* devPath, int *width, int *height, int *format)
 
   if (!validateCaptureDevice()) return 0;
   if (!initCaptureFormat()) return 0;
-  if (!setCaptureFormat(width, height, format)) return 0;
+  if (!setCaptureFormat(aWidth, aHeight, aFormat)) return 0;
   if (!getCaptureInfo()) return 0;
   if (!initBuffers()) return 0;
   if (!startStreaming()) return 0;
@@ -66,23 +50,7 @@ int initCaptureDevice(const char* devPath, int *width, int *height, int *format)
   return 1;
 }
 
-void closeCaptureDevice()
-{
-  enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  if (v4l2_ioctl(device.fd, VIDIOC_STREAMOFF, &type) < 0 ) {
-    error("Can't stop streaming I/O\n");
-  }
-
-  for (int i = 0; i < device.buffers; i++)
-  {
-    v4l2_munmap(device.buf[i].start, device.buf[i].length);
-  }
-
-  free(device.buf);
-  v4l2_close(device.fd);
-}
-
-int captureFromDevice(Frame *frame) {
+int USBGrabber::getFrame(uint8_t *aData, size_t aBytes) {
   struct v4l2_buffer buf;
   fd_set         fds;
   struct timeval tv;
@@ -90,12 +58,12 @@ int captureFromDevice(Frame *frame) {
 
   do {
     FD_ZERO(&fds);
-    FD_SET(device.fd, &fds);
+    FD_SET(mFd, &fds);
 
     tv.tv_sec = 2;
     tv.tv_usec = 0;
 
-    r = select(device.fd + 1, &fds, NULL, NULL, &tv);
+    r = select(mFd + 1, &fds, NULL, NULL, &tv);
   } while ((r == -1 && (errno = EINTR)));
 
   if (r == -1) {
@@ -107,24 +75,25 @@ int captureFromDevice(Frame *frame) {
   buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   buf.memory = V4L2_MEMORY_MMAP;
   // Enqueue an empty (capturing) buffer in the driver's incoming queue.
-  if (v4l2_ioctl(device.fd, VIDIOC_DQBUF, &buf) < 0 ) {
+  if (v4l2_ioctl(mFd, VIDIOC_DQBUF, &buf) < 0 ) {
     error("Can't queue buffer\n");
     return 0;
   }
 
-  if (buf.index >= device.buffers) {
+  if (buf.index >= mBuffers) {
     error("Invalid buffer index received\n");
     return 0;
   }
 
-  if (buf.bytesused != frame->bytes) {
+  if (buf.bytesused != aBytes) {
     error("Capturing format mismatch\n");
     return 0;
   }
-  memcpy(frame->data, device.buf[buf.index].start, buf.bytesused);
+
+  memcpy(aData, mBuf[buf.index].start, buf.bytesused);
 
   // Dequeue a filled (capturing) buffer from the driver's outgoing queue.
-  if (v4l2_ioctl(device.fd, VIDIOC_QBUF, &buf) < 0 ) {
+  if (v4l2_ioctl(mFd, VIDIOC_QBUF, &buf) < 0 ) {
     error("Can't dequeue buffer\n");
     return 0;
   }
@@ -154,25 +123,28 @@ static const char *std_pal[] = {
   "M", "N", "Nc", "60",
   NULL
 };
+
 static const char *std_ntsc[] = {
   "M", "M-JP", "443", "M-KR",
   NULL
 };
+
 static const char *std_secam[] = {
   "B", "D", "G", "H", "K", "K1", "L", "Lc",
   NULL
 };
+
 static const char *std_atsc[] = {
   "8-VSB", "16-VSB",
   NULL
 };
 
-int validateCaptureDevice() {
+int USBGrabber::validateCaptureDevice() {
   struct v4l2_capability          caps;
   clear(caps);
 
   // Get capturer capabilities
-  if (v4l2_ioctl(device.fd, VIDIOC_QUERYCAP, &caps)){
+  if (v4l2_ioctl(mFd, VIDIOC_QUERYCAP, &caps)){
     error("Error accessing to capturer properties");
     return 0;
   }
@@ -198,8 +170,8 @@ int validateCaptureDevice() {
   return 1;
 }
 
-int initCaptureFormat() {
-  if (v4l2_ioctl(device.fd, VIDIOC_G_FMT, &device.fmt) < 0) {
+int USBGrabber::initCaptureFormat() {
+  if (v4l2_ioctl(mFd, VIDIOC_G_FMT, &mFmt) < 0) {
     error("failed to determine video format\n");
     return 0;
   }
@@ -207,51 +179,51 @@ int initCaptureFormat() {
   return 1;
 }
 
-int setCaptureFormat(int *width, int *height, int *format) {
+int USBGrabber::setCaptureFormat(size_t *aWidth, size_t *aHeight, uint32_t *aFormat) {
   // Set params
-  if (*width != -1)
-    device.fmt.fmt.pix.width       = *width;
+  if (*aWidth != 0)
+    mFmt.fmt.pix.width       = *aWidth;
   else
-    *width = device.fmt.fmt.pix.width;
+    *aWidth = mFmt.fmt.pix.width;
 
-  if (*height != -1)
-    device.fmt.fmt.pix.height      = *height;
+  if (*aHeight != 0)
+    mFmt.fmt.pix.height      = *aHeight;
   else
-    *height = device.fmt.fmt.pix.height;
+    *aHeight = mFmt.fmt.pix.height;
 
-  if (*format != -1)
-    device.fmt.fmt.pix.pixelformat = *format;
+  if (*aFormat != 0)
+    mFmt.fmt.pix.pixelformat = *aFormat;
   else
-    *format = device.fmt.fmt.pix.pixelformat;
+    *aFormat = mFmt.fmt.pix.pixelformat;
 
-  if (*width == -1 && *height == -1 && *format == -1)
+  if (*aWidth == 0 && *aHeight == 0 && *aFormat == 0)
     return 1;
 
   // Configure capture format
-  if (v4l2_ioctl(device.fd, VIDIOC_S_FMT, &device.fmt) < 0) {
+  if (v4l2_ioctl(mFd, VIDIOC_S_FMT, &mFmt) < 0) {
     error("Error setting capture format\n");
     return 0;
   }
 
   // Check changes
-  if (device.fmt.fmt.pix.pixelformat != *format) {
+  if (mFmt.fmt.pix.pixelformat != *aFormat) {
     error("Error setting pixel format\n");
     return 0;
   }
 
-  if ((device.fmt.fmt.pix.width != *width) || (device.fmt.fmt.pix.height != *height)) {
-    error("Error setting capture size %dx%d\n", *width, *height);
+  if ((mFmt.fmt.pix.width != *aWidth) || (mFmt.fmt.pix.height != *aHeight)) {
+    error("Error setting capture size %zux%zu\n", *aWidth, *aHeight);
     return 0;
   }
 
   return 1;
 }
 
-int getCaptureInfo() {
+int USBGrabber::getCaptureInfo() {
   v4l2_std_id std;
 
   // Get capturer input video standard
-  if (v4l2_ioctl(device.fd, VIDIOC_G_STD, &std) < 0) {
+  if (v4l2_ioctl(mFd, VIDIOC_G_STD, &std) < 0) {
     error("Can't get capturer input video standard\n");
     return 0;
   }
@@ -275,17 +247,17 @@ int getCaptureInfo() {
   }
 
   // Get capturer formats
-  print("Resolution: %dx%d\n", device.fmt.fmt.pix.width,
-                               device.fmt.fmt.pix.height);
+  print("Resolution: %dx%d\n", mFmt.fmt.pix.width,
+                               mFmt.fmt.pix.height);
 
   print("Pixelformat: %c%c%c%c\n",
-                                device.fmt.fmt.pix.pixelformat & 0xFF,
-                                (device.fmt.fmt.pix.pixelformat >> 8) & 0xFF,
-                                (device.fmt.fmt.pix.pixelformat >> 16) & 0xFF,
-                                (device.fmt.fmt.pix.pixelformat >> 24) & 0xFF);
+                                mFmt.fmt.pix.pixelformat & 0xFF,
+                                (mFmt.fmt.pix.pixelformat >> 8) & 0xFF,
+                                (mFmt.fmt.pix.pixelformat >> 16) & 0xFF,
+                                (mFmt.fmt.pix.pixelformat >> 24) & 0xFF);
 
   print("Field: ");
-  switch(device.fmt.fmt.pix.field) {
+  switch(mFmt.fmt.pix.field) {
     case V4L2_FIELD_ANY:           print("any\n");           break;
     case V4L2_FIELD_NONE:          print("none\n");          break;
     case V4L2_FIELD_TOP:           print("top\n");           break;
@@ -299,10 +271,10 @@ int getCaptureInfo() {
     default:                       print("unknown\n");       break;
   }
 
-  print("Image size: %d bytes\n", device.fmt.fmt.pix.sizeimage);
+  print("Image size: %d bytes\n", mFmt.fmt.pix.sizeimage);
 
   print("Color space: ");
-  switch (device.fmt.fmt.pix.colorspace) {
+  switch (mFmt.fmt.pix.colorspace) {
     case V4L2_COLORSPACE_SMPTE170M:     print("Broadcast NTSC/PAL (SMPTE170M/ITU601)\n"); break;
     case V4L2_COLORSPACE_SMPTE240M:     print("1125-Line (US) HDTV (SMPTE240M)\n");     break;
     case V4L2_COLORSPACE_REC709:        print("HDTV and modern devices (ITU709)\n");       break;
@@ -317,17 +289,16 @@ int getCaptureInfo() {
   return 1;
 }
 
-int initBuffers() {
+int USBGrabber::initBuffers() {
   struct v4l2_requestbuffers req;
   struct v4l2_buffer         buf;
 
   // Configure capture buffers
   clear(req);
-  req.count = 1;
   req.count = 256;
   req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   req.memory = V4L2_MEMORY_MMAP;
-  if (v4l2_ioctl(device.fd, VIDIOC_REQBUFS, &req) < 0) {
+  if (v4l2_ioctl(mFd, VIDIOC_REQBUFS, &req) < 0) {
     error("Can't initializate capture buffers\n");
     return 0;
   }
@@ -337,27 +308,26 @@ int initBuffers() {
     return 0;
   }
 
-  device.buffers = req.count;
-  device.buf = calloc(req.count, sizeof(struct buffer));
-  for (int i = 0; i < req.count; i++)
-  {
+  mBuffers = req.count;
+  mBuf = (buffer*)calloc(req.count, sizeof(struct buffer));
+  for (size_t i = 0; i < req.count; i++) {
     clear(buf);
 
     buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     buf.memory      = V4L2_MEMORY_MMAP;
     buf.index       = i;
 
-    if (v4l2_ioctl(device.fd, VIDIOC_QUERYBUF, &buf) < 0 ) {
+    if (v4l2_ioctl(mFd, VIDIOC_QUERYBUF, &buf) < 0 ) {
       error("Error setting capture buffer\n");
       return 0;
     }
 
-    device.buf[i].length = buf.length;
-    device.buf[i].start = v4l2_mmap( NULL, buf.length,
-                                        PROT_READ | PROT_WRITE, MAP_SHARED,
-                                        device.fd, buf.m.offset);
+    mBuf[i].length = buf.length;
+    mBuf[i].start = v4l2_mmap( NULL, buf.length,
+                               PROT_READ | PROT_WRITE, MAP_SHARED,
+                               mFd, buf.m.offset);
 
-    if (device.buf[i].start == MAP_FAILED) {
+    if (mBuf[i].start == MAP_FAILED) {
       error("Error mapping capture device to buffer\n");
       return 0;
     }
@@ -366,23 +336,23 @@ int initBuffers() {
   return 1;
 }
 
-int startStreaming() {
+int USBGrabber::startStreaming() {
   struct v4l2_buffer buf;
 
-  for (int i = 0; i < device.buffers; i++) {
+  for (size_t i = 0; i < mBuffers; i++) {
     clear(buf);
 
     buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     buf.memory      = V4L2_MEMORY_MMAP;
     buf.index       = i;
 
-   if (v4l2_ioctl(device.fd, VIDIOC_QBUF, &buf) < 0 ) {
+   if (v4l2_ioctl(mFd, VIDIOC_QBUF, &buf) < 0 ) {
       error("Error exchanging capture buffer with the driver\n");
       return 0;
     }
   }
 
-  if (v4l2_ioctl(device.fd, VIDIOC_STREAMON, &device.type) < 0 ) {
+  if (v4l2_ioctl(mFd, VIDIOC_STREAMON, &mType) < 0 ) {
     error("Can't start streaming I/O\n");
     return 0;
   }

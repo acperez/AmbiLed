@@ -2,20 +2,38 @@
 #define LEDS_H
 
 #include <stdlib.h>
+#include <stdint.h>
+#include <math.h>
+#include "common.h"
+#include "led_controller.h"
+#include "arduino.h"
+#include "gpio.h"
 
-typedef struct {
-  int x;
-  int y;
-  int width;
-  int height;
-} Rect;
+class Leds {
+  public:
+    Leds(LedType aLedType, int aLedsUp, int aLedsRight, int aLedsDown, int aLedsLeft, int aWidth, int aHeight);
+    ~Leds();
 
-typedef struct {
-  int leds;
-  Rect *masks;
-} Leds;
+    int initController(const char *aDevPath, LedControllerType aControllerType);
+    int getLength();
+    Rect getMask(int i);
+    void setPixel(int aIndex, RGBVal aColor);
+    int showInit();
+    int show();
 
-Leds* initLeds(int leds_x, int leds_y, int width, int height);
-void freeLeds(Leds *leds);
+  private:
+    Rect createMask(int aX, int aY, int aMaxWidth, int aMaxHeight);
+    int showColor(RGBVal aColor);
+
+  private:
+    LedController *mController;
+    LedType mLedType;
+    int mLength;
+    Rect *mMasks;
+    uint8_t **mGamma;
+    uint8_t *mBuffer;
+    size_t mBytes;
+
+};
 
 #endif
