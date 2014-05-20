@@ -2,7 +2,7 @@ TARGET = ambiled
 CC = g++
 CXXFLAGS = -Wall -g -D__STDC_CONSTANT_MACROS #-std=c99
 #LDFLAGS = -lv4l2 -lSDL2 -lSDL2_image -lm -lavformat -lavcodec -lavutil -lswscale
-LDFLAGS = -lv4l2 -lm -lavformat -lavcodec -lavutil -lswscale
+LDFLAGS = -lconfig -lv4l2 -lm -lavformat -lavcodec -lavutil -lswscale
 #LOCAL_CPPFLAGS += -DDEBUG
 
 OBJDIR = obj
