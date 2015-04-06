@@ -61,9 +61,9 @@ int main(int argc, char **argv)
   struct timeval stop, start;
 #endif
 
-////  if(!setOverCommitMemory("1")) {
-////    exit(-1);
-////  }
+  if(!setOverCommitMemory("1")) {
+    exit(-1);
+  }
 
 //  SDL_Window *windowIn = 0;
 //  SDL_Window *windowOut = 0;
@@ -86,7 +86,7 @@ int main(int argc, char **argv)
   }
 
   if(!capturer->open(config.videoPath, &config.width, &config.height, &v4l2_format)) {
-////    setOverCommitMemory("0");
+    setOverCommitMemory("0");
     exit(-1);
   }
 
@@ -94,7 +94,7 @@ int main(int argc, char **argv)
   if (!initParams(v4l2_format, config.width, config.height, &pitch, &bytes)) {
     delete capturer;
     error("Unknwn video color format\n");
-////    setOverCommitMemory("0");
+    setOverCommitMemory("0");
     exit(-1);
   }
 
@@ -112,7 +112,7 @@ int main(int argc, char **argv)
   if (!engine->initLedController(config.ledControllerPath, config.ledControllerType)) {
 //  if (!engine->initLedController(piDev, controllerType)) {
     delete capturer;
-////    setOverCommitMemory("0");
+    setOverCommitMemory("0");
     exit(-1);
   }
 
@@ -171,7 +171,7 @@ int main(int argc, char **argv)
 //  SDL_DestroyRenderer(renderOut);
 //  SDL_DestroyTexture(textureOut);
 //  SDL_Quit();
-////  setOverCommitMemory("0");
+  setOverCommitMemory("0");
 
   return 0;
 }
